@@ -16,9 +16,19 @@ const (
 
 // Config stores runtime service settings.
 type Config struct {
-	Regions []string     `yaml:"regions"`
-	GRPC    GRPCConfig   `yaml:"grpc"`
-	Health  HealthConfig `yaml:"health"`
+	Regions    []string          `yaml:"regions"`
+	Discovery  DiscoveryConfig   `yaml:"discovery"`
+	NodeGroups []NodeGroupConfig `yaml:"nodeGroups"`
+	GRPC       GRPCConfig        `yaml:"grpc"`
+	Health     HealthConfig      `yaml:"health"`
+}
+
+type DiscoveryConfig struct {
+	Tags map[string]string `yaml:"tags"`
+}
+
+type NodeGroupConfig struct {
+	Name string `yaml:"name"`
 }
 
 type GRPCConfig struct {
@@ -51,6 +61,14 @@ func Load(path string) (Config, error) {
 	if cfg.Health.Address == "" {
 		cfg.Health.Address = DefaultHealthAddress
 	}
+
+	// Default to standard cluster-autoscaler tag if no explicit nodegroups or tags specified
+	if len(cfg.Discovery.Tags) == 0 && len(cfg.NodeGroups) == 0 {
+		cfg.Discovery.Tags = map[string]string{
+			"k8s.io/cluster-autoscaler/enabled": "true",
+		}
+	}
+
 	cfg.Regions = normalizeRegions(cfg.Regions)
 
 	return cfg, nil

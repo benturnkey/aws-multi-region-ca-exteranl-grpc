@@ -173,7 +173,11 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 		if startCfg.snapshotBuilder != nil {
 			svc.snapshotBuilder = startCfg.snapshotBuilder
 		} else {
-			svc.snapshotBuilder = discovery.NewASGSnapshotBuilder(factory)
+			var nodeGroupNames []string
+			for _, ng := range cfg.NodeGroups {
+				nodeGroupNames = append(nodeGroupNames, ng.Name)
+			}
+			svc.snapshotBuilder = discovery.NewASGSnapshotBuilder(factory, cfg.Discovery.Tags, nodeGroupNames)
 		}
 		svc.cacheRefresher = func(ctx context.Context) error {
 			snap, err := svc.snapshotBuilder.Build(ctx)
@@ -202,6 +206,11 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !svc.nodeCache.IsInitialized() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("cache not initialized"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})

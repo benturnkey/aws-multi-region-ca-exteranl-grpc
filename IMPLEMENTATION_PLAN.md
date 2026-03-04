@@ -32,6 +32,8 @@ Implemented:
 - Per-region AWS client factory and routing:
   - region lookups
   - `region/asg-name` nodegroup ID parsing/routing
+- Configurable ASG discovery via tags (defaults to `k8s.io/cluster-autoscaler/enabled: "true"`)
+- Configurable ASG discovery via explicit node group IDs
 - Read-only discovery and cache foundations:
   - multi-region ASG nodegroup discovery
   - snapshot builder
@@ -55,7 +57,6 @@ Implemented:
 Not implemented yet:
 
 - Background/ticker refresh policy and configurable refresh interval enforcement.
-- ASG tag-based auto-discovery configuration contract and explicit node group config contract.
 - Launch Template and mixed instances policy modeling for template node info.
 - Metrics, structured logging, retries/backoff, auth hardening, and rollout/deployment artifacts.
 

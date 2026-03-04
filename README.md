@@ -22,6 +22,8 @@ Implemented today:
 - gRPC + HTTP health/readiness server startup
 - Region-aware AWS client factory (ASG/EC2)
 - Read-only discovery + snapshot cache rebuild
+- Configurable ASG discovery via tags (defaults to `k8s.io/cluster-autoscaler/enabled: "true"`)
+- Configurable ASG discovery via explicit node group IDs
 - gRPC RPCs:
   - `NodeGroups`
   - `NodeGroupForNode`
@@ -39,8 +41,6 @@ Implemented today:
 ## TODO Features
 
 - Config contract expansion:
-  - ASG tag auto-discovery config
-  - explicit node group config
   - TLS/mTLS settings
   - structured logging settings
 - Refresh policy:
@@ -54,6 +54,25 @@ Implemented today:
   - retry/backoff/timeouts
   - IAM docs and deployment manifests
   - race/concurrency hardening beyond current test baseline
+
+## Configuration
+
+The service is configured via a YAML file passed at startup:
+
+```yaml
+regions:
+  - us-east-1
+  - us-west-2
+discovery:
+  tags:
+    "k8s.io/cluster-autoscaler/enabled": "true" # Default if omitted
+nodeGroups:
+  - name: my-explicit-asg-1
+grpc:
+  address: :8086
+health:
+  address: :8081
+```
 
 ## Local Development
 

@@ -109,7 +109,17 @@ health:
 		t.Fatalf("load config: %v", err)
 	}
 
-	svc, err := server.Start(cfg)
+	fakeProvider := &fakeRegionProvider{
+		regions: []string{"us-east-1"},
+		clients: map[string]*awsclient.Clients{
+			"us-east-1": {
+				AutoScaling: &fakeASGPagesClient{pages: []*autoscaling.DescribeAutoScalingGroupsOutput{{}}},
+			},
+		},
+		errByRegion: map[string]error{},
+	}
+
+	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})), server.WithAWSClientProvider(fakeProvider))
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -122,16 +132,37 @@ health:
 	})
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	for _, path := range []string{"/healthz", "/readyz"} {
-		resp, reqErr := client.Get("http://" + svc.HealthAddr() + path)
-		if reqErr != nil {
-			t.Fatalf("GET %s: %v", path, reqErr)
-		}
-		resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: status=%d want=%d", path, resp.StatusCode, http.StatusOK)
-		}
+	resp, reqErr := client.Get("http://" + svc.HealthAddr() + "/healthz")
+	if reqErr != nil {
+		t.Fatalf("GET /healthz: %v", reqErr)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz: status=%d want=%d", resp.StatusCode, http.StatusOK)
+	}
+
+	resp, reqErr = client.Get("http://" + svc.HealthAddr() + "/readyz")
+	if reqErr != nil {
+		t.Fatalf("GET /readyz: %v", reqErr)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz: status=%d want=%d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	err = svc.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("initial Refresh: %v", err)
+	}
+
+	resp, reqErr = client.Get("http://" + svc.HealthAddr() + "/readyz")
+	if reqErr != nil {
+		t.Fatalf("GET /readyz after refresh: %v", reqErr)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz after refresh: status=%d want=%d", resp.StatusCode, http.StatusOK)
 	}
 }
 
@@ -220,15 +251,23 @@ func TestStartServerWithDefaultConfigValues(t *testing.T) {
 	})
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	for _, path := range []string{"/healthz", "/readyz"} {
-		resp, reqErr := client.Get("http://" + svc.HealthAddr() + path)
-		if reqErr != nil {
-			t.Fatalf("GET %s: %v", path, reqErr)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: status=%d want=%d", path, resp.StatusCode, http.StatusOK)
-		}
+
+	resp, reqErr := client.Get("http://" + svc.HealthAddr() + "/healthz")
+	if reqErr != nil {
+		t.Fatalf("GET /healthz: %v", reqErr)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz: status=%d want=%d", resp.StatusCode, http.StatusOK)
+	}
+
+	resp, reqErr = client.Get("http://" + svc.HealthAddr() + "/readyz")
+	if reqErr != nil {
+		t.Fatalf("GET /readyz: %v", reqErr)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz: status=%d want=%d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }
 
@@ -590,7 +629,7 @@ health:
 		errByRegion: map[string]error{},
 	}
 
-	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider)))
+	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})))
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -687,7 +726,7 @@ health:
 		errByRegion: map[string]error{},
 	}
 
-	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider)), server.WithAWSClientProvider(fakeProvider))
+	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})), server.WithAWSClientProvider(fakeProvider))
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}

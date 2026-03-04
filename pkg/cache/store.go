@@ -36,8 +36,9 @@ type Snapshot struct {
 
 // Store keeps nodegroup/node mappings for read RPCs.
 type Store struct {
-	mu   sync.RWMutex
-	snap Snapshot
+	mu          sync.RWMutex
+	snap        Snapshot
+	initialized bool
 }
 
 // NewStore creates an empty cache store.
@@ -57,12 +58,20 @@ func (s *Store) Replace(next Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.initialized = true
 	s.snap = Snapshot{
 		NodeGroups:            copyNodeGroupsMap(next.NodeGroups),
 		NodeGroupByProviderID: copyStringMap(next.NodeGroupByProviderID),
 		NodeGroupByNodeName:   copyStringMap(next.NodeGroupByNodeName),
 		InstancesByNodeGroup:  copyInstancesMap(next.InstancesByNodeGroup),
 	}
+}
+
+// IsInitialized returns true if the cache has been populated at least once.
+func (s *Store) IsInitialized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.initialized
 }
 
 // NodeGroupIDForNode resolves nodegroup id using providerID first, then node name.

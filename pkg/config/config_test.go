@@ -19,6 +19,12 @@ func TestLoadYAMLConfigContract(t *testing.T) {
   address: 127.0.0.1:18086
 health:
   address: 127.0.0.1:18087
+discovery:
+  tags:
+    "custom/tag": "value"
+nodeGroups:
+  - name: "explicit-asg-1"
+  - name: "explicit-asg-2"
 `
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -34,6 +40,12 @@ health:
 	}
 	if cfg.Health.Address != "127.0.0.1:18087" {
 		t.Fatalf("health.address=%q", cfg.Health.Address)
+	}
+	if got := len(cfg.Discovery.Tags); got != 1 || cfg.Discovery.Tags["custom/tag"] != "value" {
+		t.Fatalf("discovery.tags=%v", cfg.Discovery.Tags)
+	}
+	if got := len(cfg.NodeGroups); got != 2 || cfg.NodeGroups[0].Name != "explicit-asg-1" || cfg.NodeGroups[1].Name != "explicit-asg-2" {
+		t.Fatalf("nodeGroups=%v", cfg.NodeGroups)
 	}
 }
 

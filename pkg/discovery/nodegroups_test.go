@@ -34,12 +34,14 @@ func (f *fakeProvider) ForRegion(region string) (*awsclient.Clients, error) {
 }
 
 type fakeASGClient struct {
-	pages []*autoscaling.DescribeAutoScalingGroupsOutput
-	err   error
-	calls int
+	pages         []*autoscaling.DescribeAutoScalingGroupsOutput
+	err           error
+	calls         int
+	describeCalls []*autoscaling.DescribeAutoScalingGroupsInput
 }
 
-func (f *fakeASGClient) DescribeAutoScalingGroups(_ context.Context, _ *autoscaling.DescribeAutoScalingGroupsInput, _ ...func(*autoscaling.Options)) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
+func (f *fakeASGClient) DescribeAutoScalingGroups(_ context.Context, in *autoscaling.DescribeAutoScalingGroupsInput, _ ...func(*autoscaling.Options)) (*autoscaling.DescribeAutoScalingGroupsOutput, error) {
+	f.describeCalls = append(f.describeCalls, in)
 	if f.err != nil {
 		return nil, f.err
 	}
