@@ -92,3 +92,4 @@ go test ./...
 
 - GPUs are intentionally unsupported in this service version.
 - EKS managed nodegroup metadata enrichment is intentionally out of scope.
+- Architecture and scale flow diagram: see `ARCHITECTURE.md`.
