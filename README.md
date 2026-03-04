@@ -7,6 +7,7 @@ Standalone AWS cloud provider service for Kubernetes Cluster Autoscaler using th
 This project moves AWS multi-region node group logic out of the in-tree autoscaler AWS provider and into an external gRPC service.
 
 Current scope:
+
 - AWS ASG multi-region support
 - Node group identity format: `region/asg-name`
 - ASG + Launch Template direction (no EKS-specific APIs)
@@ -15,6 +16,7 @@ Current scope:
 ## Current Implementation
 
 Implemented today:
+
 - Nix flake-based dev/test setup
 - YAML config loading with defaults
 - gRPC + HTTP health/readiness server startup
@@ -27,17 +29,15 @@ Implemented today:
   - `Refresh`
   - `GPULabel` (no-op)
   - `GetAvailableGPUTypes` (no-op)
-
-## TODO Features
-
-- Mutating node group RPCs:
   - `NodeGroupTargetSize`
   - `NodeGroupIncreaseSize`
   - `NodeGroupDecreaseTargetSize`
   - `NodeGroupDeleteNodes`
-- Node template/options RPCs:
   - `NodeGroupTemplateNodeInfo`
   - `NodeGroupGetOptions`
+
+## TODO Features
+
 - Config contract expansion:
   - ASG tag auto-discovery config
   - explicit node group config

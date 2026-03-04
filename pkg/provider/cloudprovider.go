@@ -22,10 +22,21 @@ type NodeGroupForNodeResolver func(ctx context.Context, node *protos.ExternalGrp
 type NodeGroupInstancesLister func(ctx context.Context, nodeGroupID string) ([]*protos.Instance, error)
 type Refresher func(ctx context.Context) error
 
+// NodeGroupManager handles scaling and template options for nodegroups.
+type NodeGroupManager interface {
+	TargetSize(ctx context.Context, id string) (int, error)
+	IncreaseSize(ctx context.Context, id string, delta int) error
+	DeleteNodes(ctx context.Context, id string, nodes []*protos.ExternalGrpcNode) error
+	DecreaseTargetSize(ctx context.Context, id string, delta int) error
+	TemplateNodeInfo(ctx context.Context, id string) ([]byte, error)
+	GetOptions(ctx context.Context, id string) (*protos.NodeGroupAutoscalingOptions, error)
+}
+
 type options struct {
 	nodeGroupForNodeResolver NodeGroupForNodeResolver
 	nodeGroupInstancesLister NodeGroupInstancesLister
 	refresher                Refresher
+	manager                  NodeGroupManager
 }
 
 // Option customizes server behavior.
@@ -52,6 +63,13 @@ func WithRefresher(fn Refresher) Option {
 	}
 }
 
+// WithNodeGroupManager customizes mutative and template RPCs.
+func WithNodeGroupManager(m NodeGroupManager) Option {
+	return func(o *options) {
+		o.manager = m
+	}
+}
+
 // CloudProviderServer implements the externalgrpc CloudProvider service.
 type CloudProviderServer struct {
 	protos.UnimplementedCloudProviderServer
@@ -60,6 +78,7 @@ type CloudProviderServer struct {
 	nodeGroupForNodeResolver NodeGroupForNodeResolver
 	nodeGroupInstancesLister NodeGroupInstancesLister
 	refresher                Refresher
+	manager                  NodeGroupManager
 }
 
 // NewCloudProviderServer creates a CloudProvider RPC server.
@@ -73,6 +92,7 @@ func NewCloudProviderServer(lister NodeGroupIDLister, opts ...Option) *CloudProv
 		nodeGroupForNodeResolver: o.nodeGroupForNodeResolver,
 		nodeGroupInstancesLister: o.nodeGroupInstancesLister,
 		refresher:                o.refresher,
+		manager:                  o.manager,
 	}
 }
 
@@ -134,6 +154,77 @@ func (s *CloudProviderServer) Refresh(ctx context.Context, _ *protos.RefreshRequ
 		return nil, status.Errorf(codes.Unavailable, "refresh: %v", err)
 	}
 	return &protos.RefreshResponse{}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupTargetSize(ctx context.Context, req *protos.NodeGroupTargetSizeRequest) (*protos.NodeGroupTargetSizeResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	size, err := s.manager.TargetSize(ctx, req.GetId())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "target size: %v", err)
+	}
+	return &protos.NodeGroupTargetSizeResponse{TargetSize: int32(size)}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupIncreaseSize(ctx context.Context, req *protos.NodeGroupIncreaseSizeRequest) (*protos.NodeGroupIncreaseSizeResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	delta := int(req.GetDelta())
+	if delta <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "delta must be positive")
+	}
+	if err := s.manager.IncreaseSize(ctx, req.GetId(), delta); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "increase size: %v", err)
+	}
+	return &protos.NodeGroupIncreaseSizeResponse{}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupDecreaseTargetSize(ctx context.Context, req *protos.NodeGroupDecreaseTargetSizeRequest) (*protos.NodeGroupDecreaseTargetSizeResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	delta := int(req.GetDelta())
+	if delta >= 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "delta must be negative")
+	}
+	if err := s.manager.DecreaseTargetSize(ctx, req.GetId(), delta); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "decrease target size: %v", err)
+	}
+	return &protos.NodeGroupDecreaseTargetSizeResponse{}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *protos.NodeGroupDeleteNodesRequest) (*protos.NodeGroupDeleteNodesResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	if err := s.manager.DeleteNodes(ctx, req.GetId(), req.GetNodes()); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "delete nodes: %v", err)
+	}
+	return &protos.NodeGroupDeleteNodesResponse{}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupTemplateNodeInfo(ctx context.Context, req *protos.NodeGroupTemplateNodeInfoRequest) (*protos.NodeGroupTemplateNodeInfoResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	info, err := s.manager.TemplateNodeInfo(ctx, req.GetId())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "template node info: %v", err)
+	}
+	return &protos.NodeGroupTemplateNodeInfoResponse{NodeBytes: info}, nil
+}
+
+func (s *CloudProviderServer) NodeGroupGetOptions(ctx context.Context, req *protos.NodeGroupAutoscalingOptionsRequest) (*protos.NodeGroupAutoscalingOptionsResponse, error) {
+	if s.manager == nil {
+		return nil, status.Errorf(codes.Unimplemented, "node group manager not configured")
+	}
+	opts, err := s.manager.GetOptions(ctx, req.GetId())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "get options: %v", err)
+	}
+	return &protos.NodeGroupAutoscalingOptionsResponse{NodeGroupAutoscalingOptions: opts}, nil
 }
 
 // GPULabel is a no-op: GPUs are unsupported in this provider.

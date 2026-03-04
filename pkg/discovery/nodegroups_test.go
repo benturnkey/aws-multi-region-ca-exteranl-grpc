@@ -51,6 +51,14 @@ func (f *fakeASGClient) DescribeAutoScalingGroups(_ context.Context, _ *autoscal
 	return out, nil
 }
 
+func (f *fakeASGClient) SetDesiredCapacity(context.Context, *autoscaling.SetDesiredCapacityInput, ...func(*autoscaling.Options)) (*autoscaling.SetDesiredCapacityOutput, error) {
+	return nil, nil
+}
+
+func (f *fakeASGClient) TerminateInstanceInAutoScalingGroup(context.Context, *autoscaling.TerminateInstanceInAutoScalingGroupInput, ...func(*autoscaling.Options)) (*autoscaling.TerminateInstanceInAutoScalingGroupOutput, error) {
+	return nil, nil
+}
+
 func TestListNodeGroupIDs(t *testing.T) {
 	t.Parallel()
 

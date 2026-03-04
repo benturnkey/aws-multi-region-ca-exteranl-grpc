@@ -18,8 +18,17 @@ type Instance struct {
 	State InstanceState
 }
 
+// NodeGroup is a cached representation of an Auto Scaling Group's structural metadata.
+type NodeGroup struct {
+	ID         string
+	MinSize    int
+	MaxSize    int
+	TargetSize int
+}
+
 // Snapshot is an immutable logical view used to replace cache atomically.
 type Snapshot struct {
+	NodeGroups            map[string]NodeGroup
 	NodeGroupByProviderID map[string]string
 	NodeGroupByNodeName   map[string]string
 	InstancesByNodeGroup  map[string][]Instance
@@ -35,6 +44,7 @@ type Store struct {
 func NewStore() *Store {
 	return &Store{
 		snap: Snapshot{
+			NodeGroups:            map[string]NodeGroup{},
 			NodeGroupByProviderID: map[string]string{},
 			NodeGroupByNodeName:   map[string]string{},
 			InstancesByNodeGroup:  map[string][]Instance{},
@@ -48,6 +58,7 @@ func (s *Store) Replace(next Snapshot) {
 	defer s.mu.Unlock()
 
 	s.snap = Snapshot{
+		NodeGroups:            copyNodeGroupsMap(next.NodeGroups),
 		NodeGroupByProviderID: copyStringMap(next.NodeGroupByProviderID),
 		NodeGroupByNodeName:   copyStringMap(next.NodeGroupByNodeName),
 		InstancesByNodeGroup:  copyInstancesMap(next.InstancesByNodeGroup),
@@ -100,6 +111,15 @@ func (s *Store) InstancesForNodeGroup(nodeGroupID string) []Instance {
 	return out
 }
 
+// NodeGroup returns a copy of the cached nodegroup metadata.
+func (s *Store) NodeGroup(nodeGroupID string) (NodeGroup, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ng, ok := s.snap.NodeGroups[nodeGroupID]
+	return ng, ok
+}
+
 func copyStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
@@ -114,6 +134,14 @@ func copyInstancesMap(in map[string][]Instance) map[string][]Instance {
 		vv := make([]Instance, len(v))
 		copy(vv, v)
 		out[k] = vv
+	}
+	return out
+}
+
+func copyNodeGroupsMap(in map[string]NodeGroup) map[string]NodeGroup {
+	out := make(map[string]NodeGroup, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

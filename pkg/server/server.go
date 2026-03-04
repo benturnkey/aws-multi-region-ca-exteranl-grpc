@@ -13,6 +13,8 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
 	"aws-multi-region-ca-exteranl-grpc/pkg/provider"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -29,16 +31,30 @@ type NodeGroupForNodeResolverFunc func(ctx context.Context, node *protos.Externa
 type NodeGroupInstancesListerFunc func(ctx context.Context, nodeGroupID string) ([]*protos.Instance, error)
 type CacheRefresherFunc func(ctx context.Context) error
 
+// StartOption customizes server startup dependencies.
+type StartOption func(*startOptions)
+
+// AWSClientProvider Abstracts the client factory for testing.
+type AWSClientProvider interface {
+	ForRegion(region string) (*awsclient.Clients, error)
+	ForNodeGroupID(id string) (*awsclient.Clients, error)
+}
+
 type startOptions struct {
 	nodeGroupIDLister        NodeGroupIDListerFunc
 	nodeGroupForNodeResolver NodeGroupForNodeResolverFunc
 	nodeGroupInstancesLister NodeGroupInstancesListerFunc
 	cacheRefresher           CacheRefresherFunc
 	snapshotBuilder          discovery.SnapshotBuilder
+	awsClientProvider        AWSClientProvider
 }
 
-// StartOption customizes server startup dependencies.
-type StartOption func(*startOptions)
+// WithAWSClientProvider overrides aws factory logic.
+func WithAWSClientProvider(rp AWSClientProvider) StartOption {
+	return func(o *startOptions) {
+		o.awsClientProvider = rp
+	}
+}
 
 // WithNodeGroupIDLister overrides nodegroup discovery logic (primarily for tests).
 func WithNodeGroupIDLister(lister NodeGroupIDListerFunc) StartOption {
@@ -77,7 +93,7 @@ func WithSnapshotBuilder(builder discovery.SnapshotBuilder) StartOption {
 
 // Service owns runtime listeners and HTTP health endpoints.
 type Service struct {
-	awsFactory               *awsclient.Factory
+	awsFactory               AWSClientProvider
 	nodeCache                *cache.Store
 	nodeGroupIDLister        NodeGroupIDListerFunc
 	nodeGroupForNodeResolver NodeGroupForNodeResolverFunc
@@ -96,6 +112,10 @@ type Service struct {
 
 // Start initializes listeners and starts serving health/readiness endpoints.
 func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
+	if len(cfg.Regions) == 0 {
+		return nil, errors.New("start: at least one region is required")
+	}
+
 	factory, err := awsclient.NewFactory(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("initialize aws clients: %w", err)
@@ -106,9 +126,14 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 		opt(startCfg)
 	}
 
+	rp := startCfg.awsClientProvider
+	if rp == nil {
+		rp = factory
+	}
+
 	svc := &Service{
-		awsFactory: factory,
-		nodeCache:  cache.NewStore(),
+		awsFactory:               rp,
+		nodeCache:                cache.NewStore(),
 	}
 	if startCfg.nodeGroupIDLister != nil {
 		svc.nodeGroupIDLister = startCfg.nodeGroupIDLister
@@ -190,6 +215,7 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 		provider.WithNodeGroupForNodeResolver(provider.NodeGroupForNodeResolver(svc.nodeGroupForNodeResolver)),
 		provider.WithNodeGroupInstancesLister(provider.NodeGroupInstancesLister(svc.nodeGroupInstancesLister)),
 		provider.WithRefresher(svc.Refresh),
+		provider.WithNodeGroupManager(svc),
 	))
 	go func() {
 		_ = grpcServer.Serve(grpcLis)
@@ -231,6 +257,98 @@ func (s *Service) NodeGroupIDs(ctx context.Context) ([]string, error) {
 // Refresh rebuilds cache snapshot from AWS.
 func (s *Service) Refresh(ctx context.Context) error {
 	return s.cacheRefresher(ctx)
+}
+
+// TargetSize returns the target size from cache.
+func (s *Service) TargetSize(ctx context.Context, id string) (int, error) {
+	ng, ok := s.nodeCache.NodeGroup(id)
+	if !ok {
+		return 0, fmt.Errorf("nodegroup %q not found", id)
+	}
+	return ng.TargetSize, nil
+}
+
+// IncreaseSize calls AWS API to increase capacity.
+func (s *Service) IncreaseSize(ctx context.Context, id string, delta int) error {
+	return s.modifySize(ctx, id, delta)
+}
+
+// DecreaseTargetSize calls AWS API to decrease capacity.
+func (s *Service) DecreaseTargetSize(ctx context.Context, id string, delta int) error {
+	return s.modifySize(ctx, id, delta) // delta is already negative
+}
+
+func (s *Service) modifySize(ctx context.Context, id string, delta int) error {
+	ng, ok := s.nodeCache.NodeGroup(id)
+	if !ok {
+		return fmt.Errorf("nodegroup %q not found", id)
+	}
+	clients, err := s.ClientsForNodeGroupID(id)
+	if err != nil {
+		return err
+	}
+	_, name, err := awsclient.ParseNodeGroupID(id)
+	if err != nil {
+		return err
+	}
+	newSize := int32(ng.TargetSize + delta)
+	_, err = clients.AutoScaling.SetDesiredCapacity(ctx, &autoscaling.SetDesiredCapacityInput{
+		AutoScalingGroupName: aws.String(name),
+		DesiredCapacity:      aws.Int32(newSize),
+	})
+	return err
+}
+
+// DeleteNodes calls AWS API to terminate specific instances.
+func (s *Service) DeleteNodes(ctx context.Context, id string, nodes []*protos.ExternalGrpcNode) error {
+	clients, err := s.ClientsForNodeGroupID(id)
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		// Try to extract providerID
+		providerID := node.GetProviderID()
+		if providerID == "" {
+			continue
+		}
+		// aws:///us-east-1a/i-123... -> i-123
+		instanceID := s.extractLocalInstanceID(providerID)
+		if instanceID == "" {
+			continue
+		}
+		_, err := clients.AutoScaling.TerminateInstanceInAutoScalingGroup(ctx, &autoscaling.TerminateInstanceInAutoScalingGroupInput{
+			InstanceId:                     aws.String(instanceID),
+			ShouldDecrementDesiredCapacity: aws.Bool(true),
+		})
+		if err != nil {
+			return fmt.Errorf("terminate %q: %w", instanceID, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) extractLocalInstanceID(providerID string) string {
+	for i := len(providerID) - 1; i >= 0; i-- {
+		if providerID[i] == '/' {
+			if i == len(providerID)-1 {
+				return ""
+			}
+			return providerID[i+1:]
+		}
+	}
+	return providerID
+}
+
+// TemplateNodeInfo returns the template node info.
+func (s *Service) TemplateNodeInfo(ctx context.Context, id string) ([]byte, error) {
+	// Not fully implemented: stub returning empty JSON to satisfy interface
+	return []byte("{}"), nil
+}
+
+// GetOptions returns the autoscaling options.
+func (s *Service) GetOptions(ctx context.Context, id string) (*protos.NodeGroupAutoscalingOptions, error) {
+	// Not fully implemented: stub
+	return nil, nil
 }
 
 func mapInstanceState(in cache.InstanceState) protos.InstanceStatus_InstanceState {

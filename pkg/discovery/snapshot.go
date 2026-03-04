@@ -29,6 +29,7 @@ func NewASGSnapshotBuilder(provider RegionClientProvider) *ASGSnapshotBuilder {
 // Build rebuilds nodegroup/node/instance mappings from ASGs in all regions.
 func (b *ASGSnapshotBuilder) Build(ctx context.Context) (cache.Snapshot, error) {
 	snap := cache.Snapshot{
+		NodeGroups:            map[string]cache.NodeGroup{},
 		NodeGroupByProviderID: map[string]string{},
 		NodeGroupByNodeName:   map[string]string{},
 		InstancesByNodeGroup:  map[string][]cache.Instance{},
@@ -53,6 +54,18 @@ func (b *ASGSnapshotBuilder) Build(ctx context.Context) (cache.Snapshot, error) 
 					continue
 				}
 				nodeGroupID := region + "/" + name
+
+				minSize := int(aws.ToInt32(g.MinSize))
+				maxSize := int(aws.ToInt32(g.MaxSize))
+				targetSize := int(aws.ToInt32(g.DesiredCapacity))
+
+				snap.NodeGroups[nodeGroupID] = cache.NodeGroup{
+					ID:         nodeGroupID,
+					MinSize:    minSize,
+					MaxSize:    maxSize,
+					TargetSize: targetSize,
+				}
+
 				snap.InstancesByNodeGroup[nodeGroupID] = append(snap.InstancesByNodeGroup[nodeGroupID], mapASGInstances(g.Instances)...)
 
 				for _, inst := range g.Instances {
