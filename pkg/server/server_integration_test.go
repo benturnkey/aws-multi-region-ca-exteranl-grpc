@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/awsclient"
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
+	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/server"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
@@ -677,6 +679,360 @@ health:
 	}
 	if nodesResp.GetInstances()[0].GetId() != "aws:///us-east-1a/i-123" {
 		t.Fatalf("instance id=%q", nodesResp.GetInstances()[0].GetId())
+	}
+}
+
+func TestMetricsServerStartsOnSeparatePort(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `regions:
+  - us-east-1
+grpc:
+  address: 127.0.0.1:0
+health:
+  address: 127.0.0.1:0
+observability:
+  metrics:
+    address: 127.0.0.1:0
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	otelRes, err := observability.SetupForTest()
+	if err != nil {
+		t.Fatalf("setup observability: %v", err)
+	}
+
+	metrics, err := observability.NewMetrics(otelRes.MeterProvider)
+	if err != nil {
+		t.Fatalf("create metrics: %v", err)
+	}
+
+	svc, err := server.Start(cfg,
+		server.WithMetricsHandler(otelRes.MetricsHandler),
+		server.WithMetrics(metrics),
+	)
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if stopErr := svc.Stop(ctx); stopErr != nil {
+			t.Fatalf("stop server: %v", stopErr)
+		}
+	})
+
+	if svc.MetricsAddr() == "" {
+		t.Fatal("MetricsAddr() should not be empty when handler is provided")
+	}
+	if svc.MetricsAddr() == svc.HealthAddr() {
+		t.Fatalf("metrics and health should be on different addresses: metrics=%s health=%s", svc.MetricsAddr(), svc.HealthAddr())
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get("http://" + svc.MetricsAddr() + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics: status=%d want=%d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), "# HELP") {
+		t.Fatalf("expected Prometheus output, got: %s", string(body))
+	}
+}
+
+func TestMetricsServerNotStartedWithoutHandler(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `regions:
+  - us-east-1
+grpc:
+  address: 127.0.0.1:0
+health:
+  address: 127.0.0.1:0
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	svc, err := server.Start(cfg)
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if stopErr := svc.Stop(ctx); stopErr != nil {
+			t.Fatalf("stop server: %v", stopErr)
+		}
+	})
+
+	if svc.MetricsAddr() != "" {
+		t.Fatalf("MetricsAddr() should be empty without handler, got %q", svc.MetricsAddr())
+	}
+}
+
+func TestHealthEndpointDoesNotServeMetrics(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `regions:
+  - us-east-1
+grpc:
+  address: 127.0.0.1:0
+health:
+  address: 127.0.0.1:0
+observability:
+  metrics:
+    address: 127.0.0.1:0
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	otelRes, err := observability.SetupForTest()
+	if err != nil {
+		t.Fatalf("setup observability: %v", err)
+	}
+
+	svc, err := server.Start(cfg, server.WithMetricsHandler(otelRes.MetricsHandler))
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if stopErr := svc.Stop(ctx); stopErr != nil {
+			t.Fatalf("stop server: %v", stopErr)
+		}
+	})
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get("http://" + svc.HealthAddr() + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics on health: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /metrics on health: status=%d want=%d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestMetricsEndpointContainsExpectedMetrics(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `regions:
+  - us-east-1
+grpc:
+  address: 127.0.0.1:0
+health:
+  address: 127.0.0.1:0
+observability:
+  metrics:
+    address: 127.0.0.1:0
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	otelRes, err := observability.SetupForTest()
+	if err != nil {
+		t.Fatalf("setup observability: %v", err)
+	}
+
+	metrics, err := observability.NewMetrics(otelRes.MeterProvider)
+	if err != nil {
+		t.Fatalf("create metrics: %v", err)
+	}
+
+	fakeProvider := &fakeRegionProvider{
+		regions: []string{"us-east-1"},
+		clients: map[string]*awsclient.Clients{
+			"us-east-1": {
+				AutoScaling: &fakeASGPagesClient{pages: []*autoscaling.DescribeAutoScalingGroupsOutput{
+					{
+						AutoScalingGroups: []autoscalingtypes.AutoScalingGroup{
+							{
+								AutoScalingGroupName: aws.String("asg-a"),
+								MinSize:              aws.Int32(1),
+								MaxSize:              aws.Int32(10),
+								DesiredCapacity:      aws.Int32(3),
+								Instances: []autoscalingtypes.Instance{
+									{
+										InstanceId:       aws.String("i-123"),
+										AvailabilityZone: aws.String("us-east-1a"),
+										LifecycleState:   autoscalingtypes.LifecycleStateInService,
+									},
+								},
+							},
+						},
+					},
+				}},
+			},
+		},
+		errByRegion: map[string]error{},
+	}
+
+	svc, err := server.Start(cfg,
+		server.WithMetricsHandler(otelRes.MetricsHandler),
+		server.WithMetrics(metrics),
+		server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})),
+		server.WithAWSClientProvider(fakeProvider),
+		server.WithNodeGroupIDLister(func(context.Context) ([]string, error) {
+			return []string{"us-east-1/asg-a"}, nil
+		}),
+		server.WithGRPCServerOptions(
+			grpc.ChainUnaryInterceptor(observability.GRPCUnaryServerInterceptor(metrics)),
+		),
+	)
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if stopErr := svc.Stop(ctx); stopErr != nil {
+			t.Fatalf("stop server: %v", stopErr)
+		}
+	})
+
+	// Trigger a cache refresh to populate gauges
+	ctx := context.Background()
+	if err := svc.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// Make a gRPC call to generate grpc_request_duration_seconds
+	conn, err := grpc.NewClient(svc.GRPCAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc dial: %v", err)
+	}
+	defer conn.Close()
+
+	grpcClient := protos.NewCloudProviderClient(conn)
+	if _, err := grpcClient.NodeGroups(ctx, &protos.NodeGroupsRequest{}); err != nil {
+		t.Fatalf("NodeGroups RPC: %v", err)
+	}
+
+	// Fetch metrics
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + svc.MetricsAddr() + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	metricsOutput := string(body)
+
+	expectedMetrics := []string{
+		"grpc_request_duration_seconds",
+		"cache_refresh_duration_seconds",
+		"nodegroups_total",
+		"instances_total",
+		"asg_min_size",
+		"asg_max_size",
+		"asg_current_size",
+	}
+	for _, name := range expectedMetrics {
+		if !strings.Contains(metricsOutput, name) {
+			t.Errorf("metrics output missing %q", name)
+		}
+	}
+}
+
+func TestMetricsServerShutdownCleanly(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `regions:
+  - us-east-1
+grpc:
+  address: 127.0.0.1:0
+health:
+  address: 127.0.0.1:0
+observability:
+  metrics:
+    address: 127.0.0.1:0
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	otelRes, err := observability.SetupForTest()
+	if err != nil {
+		t.Fatalf("setup observability: %v", err)
+	}
+
+	svc, err := server.Start(cfg, server.WithMetricsHandler(otelRes.MetricsHandler))
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	metricsAddr := svc.MetricsAddr()
+	if metricsAddr == "" {
+		t.Fatal("expected metrics server to be running")
+	}
+
+	// Stop should shut down metrics server without error
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := svc.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Verify metrics endpoint is no longer reachable
+	client := &http.Client{Timeout: 1 * time.Second}
+	_, err = client.Get("http://" + metricsAddr + "/metrics")
+	if err == nil {
+		t.Fatal("expected connection error after shutdown, but request succeeded")
 	}
 }
 

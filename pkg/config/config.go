@@ -10,17 +10,33 @@ import (
 )
 
 const (
-	DefaultGRPCAddress   = ":8086"
-	DefaultHealthAddress = ":8081"
+	DefaultGRPCAddress        = ":8086"
+	DefaultHealthAddress      = ":8081"
+	DefaultMetricsAddress     = ":9090"
+	DefaultTracesEndpoint     = "localhost:4317"
 )
 
 // Config stores runtime service settings.
 type Config struct {
-	Regions    []string          `yaml:"regions"`
-	Discovery  DiscoveryConfig   `yaml:"discovery"`
-	NodeGroups []NodeGroupConfig `yaml:"nodeGroups"`
-	GRPC       GRPCConfig        `yaml:"grpc"`
-	Health     HealthConfig      `yaml:"health"`
+	Regions       []string            `yaml:"regions"`
+	Discovery     DiscoveryConfig     `yaml:"discovery"`
+	NodeGroups    []NodeGroupConfig   `yaml:"nodeGroups"`
+	GRPC          GRPCConfig          `yaml:"grpc"`
+	Health        HealthConfig        `yaml:"health"`
+	Observability ObservabilityConfig `yaml:"observability"`
+}
+
+type ObservabilityConfig struct {
+	Traces  TracesConfig  `yaml:"traces"`
+	Metrics MetricsConfig `yaml:"metrics"`
+}
+
+type TracesConfig struct {
+	Endpoint string `yaml:"endpoint"`
+}
+
+type MetricsConfig struct {
+	Address string `yaml:"address"`
 }
 
 type DiscoveryConfig struct {
@@ -60,6 +76,12 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Health.Address == "" {
 		cfg.Health.Address = DefaultHealthAddress
+	}
+	if cfg.Observability.Traces.Endpoint == "" {
+		cfg.Observability.Traces.Endpoint = DefaultTracesEndpoint
+	}
+	if cfg.Observability.Metrics.Address == "" {
+		cfg.Observability.Metrics.Address = DefaultMetricsAddress
 	}
 
 	// Default to standard cluster-autoscaler tag if no explicit nodegroups or tags specified

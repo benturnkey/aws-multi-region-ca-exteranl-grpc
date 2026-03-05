@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
+	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/server"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -21,11 +24,28 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	svc, err := server.Start(cfg)
+	otelRes, err := observability.Setup(context.Background(), cfg.Observability.Traces.Endpoint)
+	if err != nil {
+		log.Fatalf("setup observability: %v", err)
+	}
+
+	metrics, err := observability.NewMetrics(otelRes.MeterProvider)
+	if err != nil {
+		log.Fatalf("create metrics: %v", err)
+	}
+
+	svc, err := server.Start(cfg,
+		server.WithMetricsHandler(otelRes.MetricsHandler),
+		server.WithGRPCServerOptions(
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
+			grpc.ChainUnaryInterceptor(observability.GRPCUnaryServerInterceptor(metrics)),
+		),
+		server.WithMetrics(metrics),
+	)
 	if err != nil {
 		log.Fatalf("start service: %v", err)
 	}
-	log.Printf("service started; health endpoints on %s", svc.HealthAddr())
+	log.Printf("service started; health=%s metrics=%s", svc.HealthAddr(), svc.MetricsAddr())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -35,5 +55,8 @@ func main() {
 	defer cancel()
 	if err := svc.Stop(shutdownCtx); err != nil {
 		log.Fatalf("stop service: %v", err)
+	}
+	if err := otelRes.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown observability: %v", err)
 	}
 }

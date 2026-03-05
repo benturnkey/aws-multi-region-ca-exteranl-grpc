@@ -129,6 +129,18 @@ func (s *Store) NodeGroup(nodeGroupID string) (NodeGroup, bool) {
 	return ng, ok
 }
 
+// AllNodeGroups returns a copy of all cached nodegroups.
+func (s *Store) AllNodeGroups() []NodeGroup {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]NodeGroup, 0, len(s.snap.NodeGroups))
+	for _, ng := range s.snap.NodeGroups {
+		out = append(out, ng)
+	}
+	return out
+}
+
 func copyStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
