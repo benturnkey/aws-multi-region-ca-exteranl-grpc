@@ -70,12 +70,32 @@ func (b *ASGSnapshotBuilder) Build(ctx context.Context) (cache.Snapshot, error) 
 				maxSize := int(aws.ToInt32(g.MaxSize))
 				targetSize := int(aws.ToInt32(g.DesiredCapacity))
 
-				snap.NodeGroups[nodeGroupID] = cache.NodeGroup{
+				ng := cache.NodeGroup{
 					ID:         nodeGroupID,
 					MinSize:    minSize,
 					MaxSize:    maxSize,
 					TargetSize: targetSize,
 				}
+
+				// Capture availability zones.
+				azs := make([]string, len(g.AvailabilityZones))
+				copy(azs, g.AvailabilityZones)
+				ng.AvailabilityZones = azs
+
+				// Capture ASG tags for label/taint/resource extraction.
+				if len(g.Tags) > 0 {
+					tags := make([]autoscalingtypes.TagDescription, len(g.Tags))
+					copy(tags, g.Tags)
+					ng.Tags = tags
+				}
+
+				// Capture launch template reference if present.
+				if g.LaunchTemplate != nil {
+					ng.LaunchTemplateName = aws.ToString(g.LaunchTemplate.LaunchTemplateName)
+					ng.LaunchTemplateVersion = aws.ToString(g.LaunchTemplate.Version)
+				}
+
+				snap.NodeGroups[nodeGroupID] = ng
 
 				snap.InstancesByNodeGroup[nodeGroupID] = append(snap.InstancesByNodeGroup[nodeGroupID], mapASGInstances(g.Instances)...)
 

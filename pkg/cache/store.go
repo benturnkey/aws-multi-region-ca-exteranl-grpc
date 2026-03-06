@@ -1,6 +1,10 @@
 package cache
 
-import "sync"
+import (
+	"sync"
+
+	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+)
 
 // InstanceState models cloud instance lifecycle for NodeGroupNodes responses.
 type InstanceState int
@@ -24,6 +28,11 @@ type NodeGroup struct {
 	MinSize    int
 	MaxSize    int
 	TargetSize int
+
+	AvailabilityZones     []string
+	Tags                  []autoscalingtypes.TagDescription
+	LaunchTemplateName    string
+	LaunchTemplateVersion string
 }
 
 // Snapshot is an immutable logical view used to replace cache atomically.

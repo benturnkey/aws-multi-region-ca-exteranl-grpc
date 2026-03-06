@@ -99,10 +99,13 @@ func (w *InstrumentedEC2) DescribeInstanceTypes(ctx context.Context, params *ec2
 
 // InstrumentClients returns a new Clients with instrumented wrappers.
 func InstrumentClients(c *awsclient.Clients, region string, m *Metrics) *awsclient.Clients {
-	return &awsclient.Clients{
+	out := &awsclient.Clients{
 		AutoScaling: &InstrumentedAutoScaling{inner: c.AutoScaling, region: region, metrics: m},
-		EC2:         &InstrumentedEC2{inner: c.EC2, region: region, metrics: m},
 	}
+	if c.EC2 != nil {
+		out.EC2 = &InstrumentedEC2{inner: c.EC2, region: region, metrics: m}
+	}
+	return out
 }
 
 // InstrumentedClientProvider wraps an AWSClientProvider to auto-instrument all returned clients.
