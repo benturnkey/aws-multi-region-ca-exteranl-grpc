@@ -11,6 +11,7 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/server"
+
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 )
@@ -54,7 +55,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := svc.Stop(shutdownCtx); err != nil {
-		log.Fatalf("stop service: %v", err)
+		log.Printf("stop service: %v", err)
 	}
 	if err := otelRes.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown observability: %v", err)

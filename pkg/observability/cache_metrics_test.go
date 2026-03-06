@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/cache"
+
 	"go.opentelemetry.io/otel"
 )
 

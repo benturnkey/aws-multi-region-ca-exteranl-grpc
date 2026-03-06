@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	DefaultGRPCAddress        = ":8086"
-	DefaultHealthAddress      = ":8081"
-	DefaultMetricsAddress     = ":9090"
-	DefaultTracesEndpoint     = "localhost:4317"
+	DefaultGRPCAddress    = ":8086"
+	DefaultHealthAddress  = ":8081"
+	DefaultMetricsAddress = ":9090"
+	DefaultTracesEndpoint = "localhost:4317"
 )
 
 // Config stores runtime service settings.

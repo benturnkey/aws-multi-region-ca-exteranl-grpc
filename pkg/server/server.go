@@ -14,6 +14,7 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
 	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/provider"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"google.golang.org/grpc"
@@ -163,8 +164,8 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 	}
 
 	svc := &Service{
-		awsFactory:               rp,
-		nodeCache:                cache.NewStore(),
+		awsFactory: rp,
+		nodeCache:  cache.NewStore(),
 	}
 	if startCfg.nodeGroupIDLister != nil {
 		svc.nodeGroupIDLister = startCfg.nodeGroupIDLister

@@ -98,11 +98,12 @@ health: {}
 
 			var cfgPath string
 			if tt.path != "" {
-				if tt.path == "__EMPTY__" {
+				switch tt.path {
+				case "__EMPTY__":
 					cfgPath = ""
-				} else if tt.path == "does-not-exist.yaml" {
+				case "does-not-exist.yaml":
 					cfgPath = filepath.Join(t.TempDir(), tt.path)
-				} else {
+				default:
 					cfgPath = tt.path
 				}
 			} else {

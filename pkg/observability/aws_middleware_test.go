@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/awsclient"
+
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"go.opentelemetry.io/otel"
