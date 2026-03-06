@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/cache"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"

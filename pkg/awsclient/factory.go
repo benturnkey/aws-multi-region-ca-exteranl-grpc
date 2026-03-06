@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
+
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"

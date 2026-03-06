@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aws-multi-region-ca-exteranl-grpc/pkg/awsclient"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
