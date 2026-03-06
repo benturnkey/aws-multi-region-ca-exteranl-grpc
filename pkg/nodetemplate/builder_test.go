@@ -168,3 +168,48 @@ func TestBuildTemplateNodeArm64(t *testing.T) {
 		t.Fatalf("arch=%q want=arm64", node.Labels["kubernetes.io/arch"])
 	}
 }
+
+func TestBuildTemplateNodeResourceTagsOverrideInstanceType(t *testing.T) {
+	t.Parallel()
+
+	ng := cache.NodeGroup{
+		ID:                "us-east-1/reserved-asg",
+		AvailabilityZones: []string{"us-east-1a"},
+		Tags: []autoscalingtypes.TagDescription{
+			{Key: aws.String("k8s.io/cluster-autoscaler/node-template/resources/cpu"), Value: aws.String("3500m")},
+			{Key: aws.String("k8s.io/cluster-autoscaler/node-template/resources/memory"), Value: aws.String("14Gi")},
+		},
+	}
+
+	it := &ec2info.InstanceType{
+		InstanceType: "m5.xlarge",
+		VCPU:         4,
+		MemoryMb:     16384,
+		Architecture: "amd64",
+	}
+
+	node := BuildTemplateNode(ng, it)
+
+	// CPU should reflect the tag value (3500m), not the instance type (4).
+	cpu := node.Status.Capacity[corev1.ResourceCPU]
+	if cpu.MilliValue() != 3500 {
+		t.Fatalf("Capacity CPU=%dm want=3500m", cpu.MilliValue())
+	}
+
+	// Memory should reflect the tag value (14Gi), not the instance type (16384Mi).
+	mem := node.Status.Capacity[corev1.ResourceMemory]
+	expectedMemBytes := int64(14) * 1024 * 1024 * 1024
+	if mem.Value() != expectedMemBytes {
+		t.Fatalf("Capacity Memory=%d want=%d (14Gi)", mem.Value(), expectedMemBytes)
+	}
+
+	// Allocatable should also reflect the overridden values.
+	allocCPU := node.Status.Allocatable[corev1.ResourceCPU]
+	if allocCPU.MilliValue() != 3500 {
+		t.Fatalf("Allocatable CPU=%dm want=3500m", allocCPU.MilliValue())
+	}
+	allocMem := node.Status.Allocatable[corev1.ResourceMemory]
+	if allocMem.Value() != expectedMemBytes {
+		t.Fatalf("Allocatable Memory=%d want=%d (14Gi)", allocMem.Value(), expectedMemBytes)
+	}
+}
