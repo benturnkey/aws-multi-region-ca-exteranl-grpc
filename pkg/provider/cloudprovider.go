@@ -32,6 +32,11 @@ type NodeGroupManager interface {
 	GetOptions(ctx context.Context, id string) (*protos.NodeGroupAutoscalingOptions, error)
 }
 
+// NodeGroupMetadataProvider optionally enriches NodeGroups RPC with min/max/debug fields.
+type NodeGroupMetadataProvider interface {
+	NodeGroupMetadata(ctx context.Context, id string) (minSize int, maxSize int, debug string, err error)
+}
+
 type options struct {
 	nodeGroupForNodeResolver NodeGroupForNodeResolver
 	nodeGroupInstancesLister NodeGroupInstancesLister
@@ -104,8 +109,18 @@ func (s *CloudProviderServer) NodeGroups(ctx context.Context, _ *protos.NodeGrou
 	}
 
 	nodeGroups := make([]*protos.NodeGroup, 0, len(ids))
+	metadataProvider, hasMetadata := s.manager.(NodeGroupMetadataProvider)
 	for _, id := range ids {
-		nodeGroups = append(nodeGroups, &protos.NodeGroup{Id: id})
+		ng := &protos.NodeGroup{Id: id}
+		if hasMetadata {
+			minSize, maxSize, debug, mdErr := metadataProvider.NodeGroupMetadata(ctx, id)
+			if mdErr == nil {
+				ng.MinSize = int32(minSize)
+				ng.MaxSize = int32(maxSize)
+				ng.Debug = debug
+			}
+		}
+		nodeGroups = append(nodeGroups, ng)
 	}
 
 	return &protos.NodeGroupsResponse{NodeGroups: nodeGroups}, nil

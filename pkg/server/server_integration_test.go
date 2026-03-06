@@ -15,11 +15,14 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/awsclient"
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
+	"aws-multi-region-ca-exteranl-grpc/pkg/ec2info"
 	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/server"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -88,6 +91,43 @@ func (f *fakeASGPagesClient) TerminateInstanceInAutoScalingGroup(_ context.Conte
 	}
 	f.terminateInstanceCalls = append(f.terminateInstanceCalls, in)
 	return &autoscaling.TerminateInstanceInAutoScalingGroupOutput{}, nil
+}
+
+type fakeEC2PagesClient struct {
+	describeLTVersionsOutput *ec2.DescribeLaunchTemplateVersionsOutput
+	describeLTVersionsErr    error
+
+	describeInstanceTypesOutput []*ec2.DescribeInstanceTypesOutput
+	describeInstanceTypesErr    error
+	describeInstanceTypesCalls  int
+}
+
+func (f *fakeEC2PagesClient) DescribeLaunchTemplateVersions(_ context.Context, _ *ec2.DescribeLaunchTemplateVersionsInput, _ ...func(*ec2.Options)) (*ec2.DescribeLaunchTemplateVersionsOutput, error) {
+	if f.describeLTVersionsErr != nil {
+		return nil, f.describeLTVersionsErr
+	}
+	return f.describeLTVersionsOutput, nil
+}
+
+func (f *fakeEC2PagesClient) DescribeInstanceTypes(_ context.Context, _ *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+	if f.describeInstanceTypesErr != nil {
+		return nil, f.describeInstanceTypesErr
+	}
+	if f.describeInstanceTypesCalls >= len(f.describeInstanceTypesOutput) {
+		return &ec2.DescribeInstanceTypesOutput{}, nil
+	}
+	out := f.describeInstanceTypesOutput[f.describeInstanceTypesCalls]
+	f.describeInstanceTypesCalls++
+	return out, nil
+}
+
+// newTestInstanceTypeResolver creates a pre-populated resolver for tests.
+func newTestInstanceTypeResolver(instanceTypes ...ec2info.InstanceType) *ec2info.Resolver {
+	r := ec2info.NewResolver()
+	for _, it := range instanceTypes {
+		r.Set(it.InstanceType, &it)
+	}
+	return r
 }
 
 func TestLoadConfigAndServeHealthReadiness(t *testing.T) {
@@ -631,7 +671,11 @@ health:
 		errByRegion: map[string]error{},
 	}
 
-	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})))
+	svc, err := server.Start(cfg,
+		server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})),
+		server.WithAWSClientProvider(fakeProvider),
+		server.WithInstanceTypeResolver(ec2info.NewResolver()),
+	)
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -1063,6 +1107,11 @@ health:
 				{
 					AutoScalingGroupName: aws.String("asg-a"),
 					DesiredCapacity:      aws.Int32(2),
+					AvailabilityZones:    []string{"us-east-1a"},
+					LaunchTemplate: &autoscalingtypes.LaunchTemplateSpecification{
+						LaunchTemplateName: aws.String("my-lt"),
+						Version:            aws.String("1"),
+					},
 					Instances: []autoscalingtypes.Instance{
 						{InstanceId: aws.String("i-123"), AvailabilityZone: aws.String("us-east-1a"), LifecycleState: autoscalingtypes.LifecycleStateInService},
 						{InstanceId: aws.String("i-456"), AvailabilityZone: aws.String("us-east-1a"), LifecycleState: autoscalingtypes.LifecycleStateInService},
@@ -1072,17 +1121,41 @@ health:
 		},
 	}}
 
+	ec2Client := &fakeEC2PagesClient{
+		describeLTVersionsOutput: &ec2.DescribeLaunchTemplateVersionsOutput{
+			LaunchTemplateVersions: []ec2types.LaunchTemplateVersion{
+				{
+					LaunchTemplateData: &ec2types.ResponseLaunchTemplateData{
+						InstanceType: ec2types.InstanceTypeM5Xlarge,
+					},
+				},
+			},
+		},
+	}
+
 	fakeProvider := &fakeRegionProvider{
 		regions: []string{"us-east-1"},
 		clients: map[string]*awsclient.Clients{
 			"us-east-1": {
 				AutoScaling: asgClient,
+				EC2:         ec2Client,
 			},
 		},
 		errByRegion: map[string]error{},
 	}
 
-	svc, err := server.Start(cfg, server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})), server.WithAWSClientProvider(fakeProvider))
+	resolver := newTestInstanceTypeResolver(ec2info.InstanceType{
+		InstanceType: "m5.xlarge",
+		VCPU:         4,
+		MemoryMb:     16384,
+		Architecture: "amd64",
+	})
+
+	svc, err := server.Start(cfg,
+		server.WithSnapshotBuilder(discovery.NewASGSnapshotBuilder(fakeProvider, nil, []string{"asg-a"})),
+		server.WithAWSClientProvider(fakeProvider),
+		server.WithInstanceTypeResolver(resolver),
+	)
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/cache"
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
+	"aws-multi-region-ca-exteranl-grpc/pkg/ec2info"
+	"aws-multi-region-ca-exteranl-grpc/pkg/nodetemplate"
 	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/provider"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -51,6 +54,7 @@ type startOptions struct {
 	metricsHandler           http.Handler
 	grpcServerOptions        []grpc.ServerOption
 	metrics                  *observability.Metrics
+	instanceTypeResolver     *ec2info.Resolver
 }
 
 // WithAWSClientProvider overrides aws factory logic.
@@ -116,6 +120,13 @@ func WithMetrics(m *observability.Metrics) StartOption {
 	}
 }
 
+// WithInstanceTypeResolver overrides the instance type resolver (primarily for tests).
+func WithInstanceTypeResolver(r *ec2info.Resolver) StartOption {
+	return func(o *startOptions) {
+		o.instanceTypeResolver = r
+	}
+}
+
 // Service owns runtime listeners and HTTP health endpoints.
 type Service struct {
 	awsFactory               AWSClientProvider
@@ -125,9 +136,13 @@ type Service struct {
 	nodeGroupInstancesLister NodeGroupInstancesListerFunc
 	cacheRefresher           CacheRefresherFunc
 	snapshotBuilder          discovery.SnapshotBuilder
+	instanceTypeResolver     *ec2info.Resolver
 	grpcListener             net.Listener
 	grpcServer               *grpc.Server
 	grpcAddr                 string
+
+	// Cache of launch template → instance type name per node group ID.
+	ltInstanceTypeCache sync.Map
 
 	healthServer *http.Server
 	healthAddr   string
@@ -163,9 +178,25 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 	}
 
 	svc := &Service{
-		awsFactory:               rp,
-		nodeCache:                cache.NewStore(),
+		awsFactory: rp,
+		nodeCache:  cache.NewStore(),
 	}
+
+	// Instance type resolver.
+	if startCfg.instanceTypeResolver != nil {
+		svc.instanceTypeResolver = startCfg.instanceTypeResolver
+	} else {
+		svc.instanceTypeResolver = ec2info.NewResolver()
+		// Initial refresh using the first region's EC2 client.
+		// Instance types are globally consistent across regions.
+		clients, err := rp.ForRegion(cfg.Regions[0])
+		if err == nil && clients.EC2 != nil {
+			if refreshErr := svc.instanceTypeResolver.Refresh(context.Background(), clients.EC2); refreshErr != nil {
+				log.Printf("warning: initial instance type refresh failed: %v", refreshErr)
+			}
+		}
+	}
+
 	if startCfg.nodeGroupIDLister != nil {
 		svc.nodeGroupIDLister = startCfg.nodeGroupIDLister
 	} else {
@@ -216,6 +247,18 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 				return err
 			}
 			svc.nodeCache.Replace(snap)
+			// Clear launch template instance type cache on refresh.
+			svc.ltInstanceTypeCache = sync.Map{}
+			// Refresh instance type data (best-effort).
+			// Skip if resolver was externally injected (e.g. tests with pre-populated data).
+			if startCfg.instanceTypeResolver == nil {
+				clients, cErr := rp.ForRegion(cfg.Regions[0])
+				if cErr == nil && clients.EC2 != nil {
+					if rErr := svc.instanceTypeResolver.Refresh(ctx, clients.EC2); rErr != nil {
+						log.Printf("warning: instance type refresh failed: %v", rErr)
+					}
+				}
+			}
 			return nil
 		}
 		if startCfg.metrics != nil {
@@ -404,10 +447,67 @@ func (s *Service) extractLocalInstanceID(providerID string) string {
 	return providerID
 }
 
-// TemplateNodeInfo returns the template node info.
+// NodeGroupMetadata returns cache-backed min/max/debug metadata for NodeGroups RPC.
+func (s *Service) NodeGroupMetadata(ctx context.Context, id string) (int, int, string, error) {
+	_ = ctx
+	ng, ok := s.nodeCache.NodeGroup(id)
+	if !ok {
+		return 0, 0, "", fmt.Errorf("nodegroup %q not found", id)
+	}
+	return ng.MinSize, ng.MaxSize, "", nil
+}
+
+// resolveInstanceTypeName resolves the instance type name for a node group,
+// using a per-node-group cache that is cleared on each Refresh cycle.
+func (s *Service) resolveInstanceTypeName(ctx context.Context, ng cache.NodeGroup) (string, error) {
+	// Check cache first.
+	if v, ok := s.ltInstanceTypeCache.Load(ng.ID); ok {
+		return v.(string), nil
+	}
+
+	if ng.LaunchTemplateName == "" {
+		return "", fmt.Errorf("nodegroup %q has no launch template", ng.ID)
+	}
+
+	clients, err := s.ClientsForNodeGroupID(ng.ID)
+	if err != nil {
+		return "", fmt.Errorf("get clients for %q: %w", ng.ID, err)
+	}
+
+	instanceTypeName, err := ec2info.GetInstanceTypeFromLaunchTemplate(ctx, clients.EC2, ng.LaunchTemplateName, ng.LaunchTemplateVersion)
+	if err != nil {
+		return "", err
+	}
+
+	s.ltInstanceTypeCache.Store(ng.ID, instanceTypeName)
+	return instanceTypeName, nil
+}
+
+// TemplateNodeInfo returns a realistic serialized corev1.Node built from the ASG's
+// launch template and resolved EC2 instance type data.
 func (s *Service) TemplateNodeInfo(ctx context.Context, id string) ([]byte, error) {
-	// Not fully implemented: stub returning empty JSON to satisfy interface
-	return []byte("{}"), nil
+	ng, ok := s.nodeCache.NodeGroup(id)
+	if !ok {
+		return nil, fmt.Errorf("nodegroup %q not found", id)
+	}
+
+	instanceTypeName, err := s.resolveInstanceTypeName(ctx, ng)
+	if err != nil {
+		return nil, fmt.Errorf("resolve instance type for %q: %w", id, err)
+	}
+
+	instanceType, ok := s.instanceTypeResolver.Get(instanceTypeName)
+	if !ok {
+		return nil, fmt.Errorf("instance type %q not found in resolver cache", instanceTypeName)
+	}
+
+	templateNode := nodetemplate.BuildTemplateNode(ng, instanceType)
+
+	nodeBytes, err := templateNode.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	return nodeBytes, nil
 }
 
 // GetOptions returns the autoscaling options.
