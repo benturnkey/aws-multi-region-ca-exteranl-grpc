@@ -151,6 +151,40 @@ func TestLoadYAMLConfigDefaults(t *testing.T) {
 	if cfg.Health.Address != config.DefaultHealthAddress {
 		t.Fatalf("health.address=%q want=%q", cfg.Health.Address, config.DefaultHealthAddress)
 	}
+	if cfg.Observability.Traces.Endpoint != config.DefaultTracesEndpoint {
+		t.Fatalf("observability.traces.endpoint=%q want=%q", cfg.Observability.Traces.Endpoint, config.DefaultTracesEndpoint)
+	}
+	if cfg.Observability.Metrics.Address != config.DefaultMetricsAddress {
+		t.Fatalf("observability.metrics.address=%q want=%q", cfg.Observability.Metrics.Address, config.DefaultMetricsAddress)
+	}
+}
+
+func TestLoadObservabilityConfigExplicit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgYAML := `observability:
+  traces:
+    endpoint: "otel-collector:4317"
+  metrics:
+    address: ":9191"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Observability.Traces.Endpoint != "otel-collector:4317" {
+		t.Fatalf("observability.traces.endpoint=%q want=%q", cfg.Observability.Traces.Endpoint, "otel-collector:4317")
+	}
+	if cfg.Observability.Metrics.Address != ":9191" {
+		t.Fatalf("observability.metrics.address=%q want=%q", cfg.Observability.Metrics.Address, ":9191")
+	}
 }
 
 func TestLoadNormalizesRegions(t *testing.T) {

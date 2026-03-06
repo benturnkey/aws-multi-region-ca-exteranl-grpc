@@ -12,6 +12,7 @@ import (
 	"aws-multi-region-ca-exteranl-grpc/pkg/cache"
 	"aws-multi-region-ca-exteranl-grpc/pkg/config"
 	"aws-multi-region-ca-exteranl-grpc/pkg/discovery"
+	"aws-multi-region-ca-exteranl-grpc/pkg/observability"
 	"aws-multi-region-ca-exteranl-grpc/pkg/provider"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
@@ -47,6 +48,9 @@ type startOptions struct {
 	cacheRefresher           CacheRefresherFunc
 	snapshotBuilder          discovery.SnapshotBuilder
 	awsClientProvider        AWSClientProvider
+	metricsHandler           http.Handler
+	grpcServerOptions        []grpc.ServerOption
+	metrics                  *observability.Metrics
 }
 
 // WithAWSClientProvider overrides aws factory logic.
@@ -91,6 +95,27 @@ func WithSnapshotBuilder(builder discovery.SnapshotBuilder) StartOption {
 	}
 }
 
+// WithMetricsHandler registers an HTTP handler on the health mux at /metrics.
+func WithMetricsHandler(h http.Handler) StartOption {
+	return func(o *startOptions) {
+		o.metricsHandler = h
+	}
+}
+
+// WithGRPCServerOptions appends gRPC server options (e.g. interceptors).
+func WithGRPCServerOptions(sopts ...grpc.ServerOption) StartOption {
+	return func(o *startOptions) {
+		o.grpcServerOptions = append(o.grpcServerOptions, sopts...)
+	}
+}
+
+// WithMetrics enables observability instrumentation of AWS clients and cache refresh.
+func WithMetrics(m *observability.Metrics) StartOption {
+	return func(o *startOptions) {
+		o.metrics = m
+	}
+}
+
 // Service owns runtime listeners and HTTP health endpoints.
 type Service struct {
 	awsFactory               AWSClientProvider
@@ -106,6 +131,9 @@ type Service struct {
 
 	healthServer *http.Server
 	healthAddr   string
+
+	metricsServer *http.Server
+	metricsAddr   string
 
 	shutdownOnce sync.Once
 }
@@ -128,7 +156,10 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 
 	rp := startCfg.awsClientProvider
 	if rp == nil {
-		rp = factory
+		rp = AWSClientProvider(factory)
+	}
+	if startCfg.metrics != nil {
+		rp = observability.NewInstrumentedClientProvider(rp, startCfg.metrics)
 	}
 
 	svc := &Service{
@@ -179,13 +210,20 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 			}
 			svc.snapshotBuilder = discovery.NewASGSnapshotBuilder(factory, cfg.Discovery.Tags, nodeGroupNames)
 		}
-		svc.cacheRefresher = func(ctx context.Context) error {
+		baseRefresh := func(ctx context.Context) error {
 			snap, err := svc.snapshotBuilder.Build(ctx)
 			if err != nil {
 				return err
 			}
 			svc.nodeCache.Replace(snap)
 			return nil
+		}
+		if startCfg.metrics != nil {
+			svc.cacheRefresher = func(ctx context.Context) error {
+				return observability.RecordCacheRefresh(ctx, startCfg.metrics, baseRefresh, svc.nodeCache)
+			}
+		} else {
+			svc.cacheRefresher = baseRefresh
 		}
 	}
 
@@ -215,7 +253,7 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(startCfg.grpcServerOptions...)
 	grpcHealth := health.NewServer()
 	grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, grpcHealth)
@@ -240,6 +278,24 @@ func Start(cfg config.Config, opts ...StartOption) (*Service, error) {
 	svc.grpcAddr = grpcLis.Addr().String()
 	svc.healthServer = healthSrv
 	svc.healthAddr = healthLis.Addr().String()
+
+	if startCfg.metricsHandler != nil && cfg.Observability.Metrics.Address != "" {
+		metricsLis, err := net.Listen("tcp", cfg.Observability.Metrics.Address)
+		if err != nil {
+			_ = grpcLis.Close()
+			_ = healthSrv.Close()
+			return nil, fmt.Errorf("listen metrics: %w", err)
+		}
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", startCfg.metricsHandler)
+		metricsSrv := &http.Server{Handler: metricsMux}
+		go func() {
+			_ = metricsSrv.Serve(metricsLis)
+		}()
+		svc.metricsServer = metricsSrv
+		svc.metricsAddr = metricsLis.Addr().String()
+	}
+
 	return svc, nil
 }
 
@@ -378,6 +434,11 @@ func (s *Service) HealthAddr() string {
 	return s.healthAddr
 }
 
+// MetricsAddr returns the bound metrics listener address.
+func (s *Service) MetricsAddr() string {
+	return s.metricsAddr
+}
+
 // Stop gracefully shuts down server resources.
 func (s *Service) Stop(ctx context.Context) error {
 	var err error
@@ -395,6 +456,11 @@ func (s *Service) Stop(ctx context.Context) error {
 
 		if closeErr := s.healthServer.Shutdown(ctx); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
 			err = closeErr
+		}
+		if s.metricsServer != nil {
+			if closeErr := s.metricsServer.Shutdown(ctx); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				err = closeErr
+			}
 		}
 	})
 	return err
